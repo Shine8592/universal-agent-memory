@@ -2,6 +2,39 @@
 
 本文件记录 Universal Agent Memory 的版本迭代历史，遵循 **本地迭代 → 验证 → 发布 GitHub 最新 → 旧版本归档** 的开发原则。
 
+## [v3.2.0] - 2026-10-19
+
+> 主题：**两个记忆 Skill 合并为一个**（删除 `semantic-memory-auto`）。属破坏性变更。
+
+### 为什么
+
+仓库里曾有两个 SKILL.md：
+
+- `memory-system` —— 架构说明（存储结构 / 双引擎 / 工具清单）
+- `semantic-memory-auto` —— 行为触发策略（何时检索 / 何时不检索 / 结果评分）
+
+两者描述都含「记忆 / 历史决策 / 语义检索」，**同一个问题会同时命中两个**，各加载一遍 ——
+上下文浪费，且命令/口径可能打架。实测 `semantic-memory-auto` 的独特价值只有约 15 行
+（触发清单 + 不触发清单 + 评分口径），不值得单开一个 skill。
+
+### 变更（破坏性）
+
+- 触发条件、不触发条件、结果评分口径**并入 `memory-system`**；description 改为中文触发词。
+- **删除 `skills/semantic-memory-auto/`**（仓库与 `~/.config/opencode/skills/` 各一份）。
+- 修正 `memory-system` 两处失真：
+  1. 存储树原画了 `warm/` `cold/` 目录 —— **实际不存在**；三层存储是**内存 LRU 缓存**
+     （`storage_tiers.py` 的 `get_cold_items` / `auto_demote`），不是磁盘目录。
+  2. MCP 工具清单从 8 个补全到 **12 个**（补 `memory_prime` / `memory_transfer` /
+     `memory_reflect` / `memory_session_save`）。
+- 补充 v3.1.0 的检索口径（评分 = 0.70 相关性 + 0.18 实体 + 0.12 新近度）、
+  `supersedes` 用法、`MEMORY_GLOBAL` 说明。
+
+### 验证
+
+- 仓库 `skills/` 只剩 `memory-system/`（SKILL.md 5.1KB + `references/deployment-guide.md`）。
+- `~/.config/opencode/skills/` 已同步删除 `semantic-memory-auto`；重启后技能列表不再出现它。
+- 部署版与仓库的 `memory-system/SKILL.md` 哈希一致。
+
 ## [v3.1.1] - 2026-10-19
 
 > 修复：`memory_reindex` 的**后台重建在 MCP 环境下会静默卡死**。

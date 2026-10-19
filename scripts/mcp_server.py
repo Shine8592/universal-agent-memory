@@ -779,7 +779,7 @@ def do_forget(args):
 @tool("memory_status")
 def do_status(args):
     ensure_dirs()
-    lines = ["记忆系统 v3.1.1 (混合检索+重排+实体/时间/矛盾屏蔽)",
+    lines = ["记忆系统 v3.2.0 (混合检索+重排+实体/时间+矛盾屏蔽)",
              f"   项目: {PROJECT_ROOT}", f"   存储: {MEMORY_DIR}", ""]
     lines.append(f"   向量索引: {'✅ 存在' if INDEX_PATH.exists() else '❌ 未构建'}")
 
@@ -1178,7 +1178,7 @@ def handle_message(msg: dict) -> dict | None:
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"experimental": {}, "tools": {"listChanged": False}},
-                "serverInfo": {"name": "universal-agent-memory", "version": "3.1.1"}
+                "serverInfo": {"name": "universal-agent-memory", "version": "3.2.0"}
             }
         }
     elif method == "notifications/initialized":
