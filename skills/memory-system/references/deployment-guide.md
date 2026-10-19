@@ -23,8 +23,8 @@ cp -r skills/* ~/.config/opencode/memory/skills/
 # 4. 放入核心记忆文件（用户自行提供）
 # 需要: SOUL.md, IDENTITY.md, USER.md, MEMORY.md, TOOLS.md
 
-# 5. 初始化双记忆引擎
-python3 ~/.config/opencode/memory/scripts/init_dual_memory.py
+# 5. 双记忆引擎会在首次调用 memory_remember / memory_transfer 时自动初始化
+#    （旧版的 init_dual_memory.py 已废弃，无需手动执行）
 
 # 6. 构建向量索引
 cd ~/.config/opencode/memory && python3 ~/.config/opencode/memory/scripts/build_full_index.py
@@ -105,10 +105,10 @@ cronjob action=create name="向量索引每日重建" \
   schedule="0 3 * * *" \
   prompt="执行嘟嘟向量记忆索引自动重建。运行命令: python3 ~/.config/opencode/memory/scripts/build_full_index.py"
 
-# 3. 记忆维护
+# 3. 记忆维护（自动提升重要 STM 到 LTM）
 cronjob action=create name="记忆维护自动转移" \
   schedule="0 */6 * * *" \
-  prompt="执行嘟嘟记忆维护。运行命令: python3 ~/.config/opencode/memory/scripts/memory_maintain.py"
+  prompt="执行记忆维护：调用 MCP 工具 memory_transfer（threshold=0.7）将高价值短期记忆提升到长期记忆"
 ```
 
 ## 日常维护命令速查
@@ -118,7 +118,7 @@ cronjob action=create name="记忆维护自动转移" \
 | 查看索引状态 | `python3 ~/.config/opencode/memory/scripts/semantic_search.py status` |
 | 语义搜索 | `python3 ~/.config/opencode/memory/scripts/semantic_search.py search "你的问题"` |
 | 重建索引（含会话） | `python3 ~/.config/opencode/memory/scripts/build_full_index.py` |
-| 记忆维护（清理+转移） | `python3 ~/.config/opencode/memory/scripts/memory_maintain.py` |
+| 记忆维护（转移 STM→LTM） | 调用 MCP 工具 `memory_transfer`（threshold 可调） |
 | 查看Cron任务列表 | `cronjob action=list` |
 
 ## 故障排查

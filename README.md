@@ -4,7 +4,7 @@
 
 <div align="center">
 
-![version](https://img.shields.io/badge/version-3.2.1-blue)
+![version](https://img.shields.io/badge/version-3.2.2-blue)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-green)
 ![MCP](https://img.shields.io/badge/Protocol-MCP%20JSON--RPC-orange)
 ![Agents](https://img.shields.io/badge/Agents-13%2B-purple)
@@ -352,9 +352,11 @@ scripts/
 ├── build_full_index.py    # 全量索引构建
 ├── install_memory_mcp.py  # 跨 Agent 一键安装器（13 个 Agent）
 ├── storage_tiers.py       # 热/温/冷三层存储
-├── memory_dedup.py        # 语义去重引擎
+├── auto_index_updater.py  # 自动索引更新器（文件变更检测 → 触发重建）
 ├── plugin_bridge.py       # JSON CLI 桥接（Daemon 模式）
-└── memory_maintain.py     # 定时维护工具
+# 注：旧版的 memory_dedup.py / memory_maintain.py / init_dual_memory.py /
+#     final_verify.py 已废弃删除 —— 语义去重并入 dual_memory_engine.find_semantic_duplicate，
+#     定时维护改为 cron 直接调 build_full_index.py / memory_transfer。
 ```
 
 ---
@@ -388,7 +390,8 @@ universal-agent-memory (2026-07) → 当前主项目：MCP 架构 + 混合检索
 
 | 版本 | 说明 |
 |------|------|
-| [v3.2.1](https://github.com/Shine8592/universal-agent-memory/releases/tag/v3.2.1) | **当前最新**：修复 `--target` 部署形态下的向量依赖断裂 —— `build_full_index.py` 改惰性导入、`_bootstrap_sys_path()` 真正读取 `PIP_TARGET`、`memory_reindex` 缺依赖时给降级提示而非抛栈、`memory_status` 增加依赖状态行、重建后校验 index mtime；删除 v3.1.1 遗留的 `background` 参数 |
+| [v3.2.2](https://github.com/Shine8592/universal-agent-memory/releases/tag/v3.2.2) | **当前最新**：体检修复 —— 打通 `promoted_count` / `total_transfers` 双计数器（`memory_reflect` 链路此前不累计，"已提升到长期"恒为 0）；RRF 融合去重 key 改为完整 text（修掉同一条记忆在 BM25/向量两路被当成两条重复占位）；清理文档中 4 个已废弃脚本的引用 |
+| [v3.2.1](https://github.com/Shine8592/universal-agent-memory/releases/tag/v3.2.1) | 修复 `--target` 部署形态下的向量依赖断裂 —— `build_full_index.py` 改惰性导入、`_bootstrap_sys_path()` 真正读取 `PIP_TARGET`、`memory_reindex` 缺依赖时给降级提示而非抛栈、`memory_status` 增加依赖状态行、重建后校验 index mtime；删除 v3.1.1 遗留的 `background` 参数 |
 | [v3.2.0](https://github.com/Shine8592/universal-agent-memory/releases/tag/v3.2.0) | **破坏性**：两个记忆 Skill 合并为一个 —— `semantic-memory-auto` 的触发条件/不触发条件/结果评分并入 `memory-system` 后**删除该 Skill**；修正存储树（`warm/` `cold/` 实为内存 LRU，非磁盘目录）；MCP 工具清单补全至 12 个 |
 | [v3.1.1](https://github.com/Shine8592/universal-agent-memory/releases/tag/v3.1.1) | 修复 `memory_reindex` 在 MCP 环境下 spawn 子进程会卡死（0.1s CPU / 20MB 永不结束 → 静默失败）；改为进程内同步重建（实测 5.2s），完成后就地失效缓存 |
 | [v3.1.0](https://github.com/Shine8592/universal-agent-memory/releases/tag/v3.1.0) | 检索质量三件套（时间感知排序 + 实体加权 + 矛盾记忆屏蔽）+ 索引健康度自检 + 双记忆引擎修复（`promoted_count` / `threshold` / `force`）+ `MEMORY_GLOBAL` 全局共享库 |

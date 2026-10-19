@@ -107,12 +107,18 @@ class BM25Index:
 # RRF 融合（Reciprocal Rank Fusion）
 # ---------------------------------------------------------------------------
 def rrf_merge(result_lists: list, top_k: int, k: int = 60) -> list:
-    """多路结果 RRF 融合：score(d) = Σ 1/(k + rank(d))，k 默认 60"""
+    """多路结果 RRF 融合：score(d) = Σ 1/(k + rank(d))，k 默认 60
+
+    v3.2.2 修复：去重 key 从 text[:120] 改为完整 text。
+    旧实现里 BM25 侧 build_from_stm 把 metadata 的 text 截到 800、
+    search 截到 500，而向量侧返回完整 text —— 同一条记忆在两路的
+    key 前缀相同但完整度不同，会被当成两条独立结果重复占位。
+    用完整 text 做 key 后，只要内容一致就一定合并，不一致就保留两条（正确行为）。"""
     scores = {}
     items = {}
     for results in result_lists:
         for rank, item in enumerate(results):
-            key = item.get("text", "")[:120]
+            key = item.get("text", "")
             scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank + 1)
             if key not in items:
                 items[key] = item

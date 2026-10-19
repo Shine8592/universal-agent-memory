@@ -707,6 +707,29 @@ def do_remember(args):
         return f"已保存记忆: {item_id[:12]}（并屏蔽旧结论：{sup[:30]}）"
     return f"已保存记忆: {item_id[:12]}"
 
+def _bump_promoted_count(transferred: int):
+    """把 STM→LTM 的转移条数累计进 memory_coordinator.json 的 stats.promoted_count。
+
+    为什么单独抽出来：dual_memory_engine.MemoryCoordinator 内部用自己的
+    self.state["total_transfers"] 计数，从不写外层 coordinator 的
+    stats.promoted_count —— 导致 memory_status 里的"已提升到长期"恒为 0。
+    memory_transfer 和 memory_reflect 两条链路都会触发转移，
+    必须都在成功后调用本函数补偿统计（v3.2.2 修复）。"""
+    if not transferred:
+        return
+    try:
+        coord_path = MEMORY_DIR / "memory_coordinator.json"
+        c = {}
+        if coord_path.exists():
+            c = json.loads(coord_path.read_text(encoding="utf-8"))
+        st = c.setdefault("stats", {})
+        st["promoted_count"] = int(st.get("promoted_count", 0)) + int(transferred)
+        st["stm_count"] = len(list(STM_DIR.glob("*.json")))
+        c["last_transfer"] = datetime.now().isoformat(timespec="seconds")
+        coord_path.write_text(json.dumps(c, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
 @tool("memory_transfer")
 def do_transfer(args):
     """手动触发 STM→LTM 转移。
@@ -732,18 +755,8 @@ def do_transfer(args):
         coordinator.state["importance_threshold"] = max(0.0, min(1.0, t))
         transferred = coordinator.auto_transfer(max_transfers=10)
 
-    # 修正统计（旧版 stats.promoted_count 从不更新）
-    try:
-        coord_path = MEMORY_DIR / "memory_coordinator.json"
-        if coord_path.exists():
-            c = json.loads(coord_path.read_text(encoding="utf-8"))
-            st = c.setdefault("stats", {})
-            st["promoted_count"] = int(st.get("promoted_count", 0)) + int(transferred or 0)
-            st["stm_count"] = len(list(STM_DIR.glob("*.json")))
-            c["last_transfer"] = datetime.now().isoformat(timespec="seconds")
-            coord_path.write_text(json.dumps(c, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:
-        pass
+    # 统计累计（v3.2.2 起统一走 _bump_promoted_count）
+    _bump_promoted_count(transferred)
 
     if transferred:
         auto_commit(f"转移 {transferred} 条短期记忆到长期记忆")
@@ -784,7 +797,7 @@ def do_forget(args):
 @tool("memory_status")
 def do_status(args):
     ensure_dirs()
-    lines = ["记忆系统 v3.2.1 (混合检索+重排+实体/时间+矛盾屏蔽)",
+    lines = ["记忆系统 v3.2.2 (混合检索+重排+实体/时间+矛盾屏蔽)",
              f"   项目: {PROJECT_ROOT}", f"   存储: {MEMORY_DIR}", ""]
     lines.append(f"   向量索引: {'✅ 存在' if INDEX_PATH.exists() else '❌ 未构建'}")
 
@@ -1060,6 +1073,9 @@ def do_reflect(args):
         from dual_memory_engine import MemoryCoordinator
         coordinator = MemoryCoordinator()
         promoted_count = coordinator.auto_transfer(max_transfers=5)
+        # v3.2.2：reflect 链路的转移也要累计进 promoted_count，
+        # 否则 memory_status 里的"已提升到长期"永远漏掉这一路
+        _bump_promoted_count(promoted_count)
     except Exception:
         pass
 
@@ -1225,7 +1241,7 @@ def handle_message(msg: dict) -> dict | None:
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"experimental": {}, "tools": {"listChanged": False}},
-                "serverInfo": {"name": "universal-agent-memory", "version": "3.2.1"}
+                "serverInfo": {"name": "universal-agent-memory", "version": "3.2.2"}
             }
         }
     elif method == "notifications/initialized":

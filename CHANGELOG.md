@@ -2,6 +2,41 @@
 
 本文件记录 Universal Agent Memory 的版本迭代历史，遵循 **本地迭代 → 验证 → 发布 GitHub 最新 → 旧版本归档** 的开发原则。
 
+## [v3.2.2] - 2026-10-19
+
+> 主题：**体检修复** —— 打通两个一直"假工作"的统计/去重逻辑。
+
+### 为什么
+
+对项目做了一次全量体检，发现两个"看起来在跑、实际数据是假的"的问题：
+
+- `memory_status` 里的"已提升到长期"恒为 0，但 MEMORY.md 明明有 85 段。
+  根因：`memory_transfer` 会写 `stats.promoted_count`（v3.1.0 补的），
+  但 `memory_reflect` 走 `dual_memory_engine.auto_transfer()`，内部只累加自己的
+  `self.state["total_transfers"]`，**从不写外层 coordinator 的 `promoted_count`**。
+  两条计数器各自为政，导致 reflect 链路的转移全部漏记。
+- 混合检索偶发同一条记忆在结果里出现两次。
+  根因：`rrf_merge` 用 `text[:120]` 做去重 key，但 BM25 侧 `build_from_stm`
+  把 metadata 的 text 截到 800、`search()` 截到 500，向量侧返回完整 text ——
+  同一条记忆在两路的 key 完整度不同，被当成两条独立结果。
+
+### 变更
+
+1. `mcp_server.py`：抽出 `_bump_promoted_count()`，让 `memory_transfer` 和
+   `memory_reflect` 两条链路都正确累计 `stats.promoted_count`。
+2. `hybrid_search.py`：`rrf_merge` 的去重 key 从 `text[:120]` 改为**完整 text**，
+   同一条记忆在两路检索结果中必然合并，不再重复占位。
+3. 文档清理：删除 `README.md` / `deployment-guide.md` 中对 4 个已废弃脚本
+   （`init_dual_memory.py` / `memory_maintain.py` / `memory_dedup.py` / `final_verify.py`）的引用。
+4. 部署版清理：删除 `~/.config/opencode/memory/scripts/.opencode/` 空目录残留。
+
+### 验证
+
+- `promoted_count` 修复：构造 1 条高重要性 STM → 调 `memory_reflect(apply=true)` →
+  `memory_coordinator.json` 的 `stats.promoted_count` 从 0 → 1。
+- RRF key 修复：构造 BM25 截断 + 向量完整两条同内容结果 → `rrf_merge` 输出 1 条（旧逻辑输出 2 条）。
+- 全量编译 + 仓库/部署版 SHA256 一致 + MCP 六工具实测全通过。
+
 ## [v3.2.1] - 2026-10-19
 
 > 主题：修复 **`pip install --target` 部署形态下的向量依赖断裂**（社区报告 5 条，逐一核实：4 条属实 + 1 条有效加固建议）。
