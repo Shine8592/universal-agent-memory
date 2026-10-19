@@ -42,7 +42,16 @@ def _bootstrap_sys_path():
         if os.path.isdir(vsp) and vsp not in sys.path:
             sys.path.insert(0, vsp)
             added.append(vsp)
-    # 3) user site / global site（PIP_TARGET 场景）
+    # 3) PIP_TARGET（`pip install --target DIR` 部署形态）
+    #    v3.2.1 修复：此前这里只在注释里提到 PIP_TARGET，代码从未读取该变量，
+    #    导致容器里 /app/user-packages/python 这类目录永远进不了 sys.path，
+    #    site.getusersitepackages() 也覆盖不到 —— 向量依赖必然 ImportError。
+    for p in os.environ.get("PIP_TARGET", "").split(os.pathsep):
+        p = p.strip()
+        if p and p not in sys.path and os.path.isdir(p):
+            sys.path.insert(0, p)
+            added.append(p)
+    # 4) user site / global site
     try:
         for usp in (site.getusersitepackages(),) + (tuple(site.getsitepackages()) if hasattr(site, "getsitepackages") else ()):
             if usp and os.path.isdir(usp) and usp not in sys.path:
@@ -50,7 +59,7 @@ def _bootstrap_sys_path():
                 added.append(usp)
     except Exception:
         pass
-    # 4) 兼容常规 shell 下的 PYTHONPATH
+    # 5) 兼容常规 shell 下的 PYTHONPATH
     for p in os.environ.get("PYTHONPATH", "").split(os.pathsep):
         p = p.strip()
         if p and p not in sys.path and os.path.isdir(p):
@@ -77,8 +86,9 @@ def _check_embedding_deps():
             missing.append(mod)
     if missing:
         print("[universal-agent-memory] WARNING: 缺失 embedding 依赖: "
-              + ", ".join(missing) + "。memory_recall 将无法工作。修复: `pip install "
-              + " ".join(missing) + "` 或设置 UAM_EXTRA_SYS_PATH 指向其所在目录。",
+              + ", ".join(missing) + "。memory_recall / memory_reindex 将无法工作。修复: `pip install "
+              + " ".join(missing) + "`；若依赖装在 pip --target 目录，"
+              + "设置 PIP_TARGET 或 UAM_EXTRA_SYS_PATH 指向该目录后重启 MCP。",
               file=sys.stderr)
     return missing
 
@@ -375,13 +385,8 @@ TOOL_DEFS = [
     },
     {
         "name": "memory_reindex",
-        "description": "重建向量索引（默认后台运行避免超时，background=false 可前台运行）",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "background": {"type": "boolean", "description": "后台运行（默认 true 避免 MCP 执行超时；需同步等待结果时传 false）", "default": True}
-            }
-        }
+        "description": "重建向量索引（进程内同步执行，通常 4~16 秒；完成后自动失效缓存）",
+        "inputSchema": {"type": "object", "properties": {}}
     },
     {
         "name": "memory_transfer",
@@ -779,9 +784,21 @@ def do_forget(args):
 @tool("memory_status")
 def do_status(args):
     ensure_dirs()
-    lines = ["记忆系统 v3.2.0 (混合检索+重排+实体/时间+矛盾屏蔽)",
+    lines = ["记忆系统 v3.2.1 (混合检索+重排+实体/时间+矛盾屏蔽)",
              f"   项目: {PROJECT_ROOT}", f"   存储: {MEMORY_DIR}", ""]
     lines.append(f"   向量索引: {'✅ 存在' if INDEX_PATH.exists() else '❌ 未构建'}")
+
+    # v3.2.1：依赖状态直接进 memory_status（此前只 print 到 stderr，
+    # MCP 宿主根本看不到，用户只能看到"检索失效"却不知缺什么）
+    if _missing_deps:
+        lines.append(f"   向量依赖: ❌ 缺失 {', '.join(_missing_deps)}（memory_recall 不可用）")
+        lines.append("             修复: pip install numpy faiss-cpu sentence-transformers")
+        lines.append("             （或设 PIP_TARGET / UAM_EXTRA_SYS_PATH 指向依赖目录后重启 MCP）")
+    else:
+        lines.append("   向量依赖: ✅ OK")
+    _pip_target = os.environ.get("PIP_TARGET", "").strip()
+    if _pip_target:
+        lines.append(f"   PIP_TARGET: {_pip_target}")
 
     # ── v3.1.0：索引健康度自检（防"存了但检索不到"的静默落后）──
     meta_n, latest_ts = 0, ""
@@ -1063,19 +1080,39 @@ def do_reflect(args):
 
 @tool("memory_reindex")
 def do_reindex(args):
-    """重建向量索引（v3.1.0：本进程内同步重建）。
+    """重建向量索引（v3.1.0 起本进程内同步重建；v3.2.1 增加降级提示与落盘校验）。
 
     旧版默认 spawn 子进程 + stdout/stderr=DEVNULL，在 MCP 环境下会卡死
     （子进程 0.1s CPU / 20MB、永不结束 —— 静默失败）。实测构建只要 4~16s，
-    远低于 MCP 超时（默认 600s），同步做最稳；完成后就地失效缓存，无需重启。"""
-    from build_full_index import extract_core_and_logs, build_index as do_build
+    远低于 MCP 超时（默认 600s），同步做最稳；完成后就地失效缓存，无需重启。
+
+    v3.1.1 删除了后台模式，v3.2.1 同步删掉 schema 里的 background 参数
+    （残留会导致"传了不报错也不生效"的静默不一致）。args 现不使用。
+    """
     ensure_dirs()
+
+    # 缺依赖时给出可执行提示，而不是把 ModuleNotFoundError 原样抛给宿主
+    try:
+        from build_full_index import extract_core_and_logs, build_index as do_build
+    except ImportError as e:
+        return ("❌ 无法重建索引：向量依赖不可用。\n"
+                f"   {e}\n"
+                "   修复: pip install numpy faiss-cpu sentence-transformers\n"
+                "   若依赖装在 pip --target 目录，设 PIP_TARGET 或 "
+                "UAM_EXTRA_SYS_PATH 指向它后重启 MCP。")
+
     chunks = extract_core_and_logs()
     if not chunks:
         return "❌ 没有找到可索引的内容"
 
+    before = INDEX_PATH.stat().st_mtime if INDEX_PATH.exists() else 0.0
     t0 = datetime.now()
-    do_build(chunks)
+    try:
+        do_build(chunks)
+    except ImportError as e:
+        return ("❌ 无法重建索引：向量依赖不可用。\n"
+                f"   {e}\n"
+                "   修复: pip install numpy faiss-cpu sentence-transformers")
 
     # 就地失效缓存：下一次检索直接加载新索引
     global searcher, _bm25_index, _full_cache
@@ -1084,7 +1121,17 @@ def do_reindex(args):
     _full_cache = {"mtime": None, "map": {}}
 
     dur = (datetime.now() - t0).total_seconds()
-    return f"✅ 索引已重建：{len(chunks)} 块，用时 {dur:.1f}s（缓存已失效，下次检索自动加载）"
+
+    # 落盘校验：只有 mtime 真的前进才算成功（防"报成功但索引没写"）
+    after = INDEX_PATH.stat().st_mtime if INDEX_PATH.exists() else 0.0
+    if after <= before:
+        return ("⚠ 索引重建已执行，但索引文件未更新（mtime 未前进），结果不可信。\n"
+                f"   索引: {INDEX_PATH}\n"
+                f"   条目: {len(chunks)} 块，用时 {dur:.1f}s\n"
+                "   请检查 MCP stderr 日志中的构建错误。")
+
+    return (f"✅ 索引已重建：{len(chunks)} 块，用时 {dur:.1f}s，"
+            f"索引文件已更新（{datetime.fromtimestamp(after).strftime('%H:%M:%S')}）")
 
 @tool("memory_history")
 def do_history(args):
@@ -1178,7 +1225,7 @@ def handle_message(msg: dict) -> dict | None:
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"experimental": {}, "tools": {"listChanged": False}},
-                "serverInfo": {"name": "universal-agent-memory", "version": "3.2.0"}
+                "serverInfo": {"name": "universal-agent-memory", "version": "3.2.1"}
             }
         }
     elif method == "notifications/initialized":

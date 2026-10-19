@@ -5,9 +5,11 @@
 import os, sys, json, re, time
 from pathlib import Path
 from datetime import datetime
-from sentence_transformers import SentenceTransformer
-import faiss
-import numpy as np
+
+# 注意：sentence-transformers / faiss / numpy 一律不在模块顶层导入（见 v3.2.1）。
+# extract_core_and_logs() 是纯文本抽取，MCP 的 memory_reindex 会直接 import 本模块；
+# 若顶层硬导入，在 `pip install --target` 这类部署形态下（依赖目录不在 sys.path）
+# 整个模块 import 就会失败，连纯文本抽取都用不了，且报错栈毫无指向性。
 
 # Safe UTF-8 stdout for Windows GBK consoles
 if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8", "utf_8"):
@@ -100,8 +102,42 @@ def extract_core_and_logs():
     print(f"  MCP记忆: {sum(1 for c in chunks if c['type'].startswith('memory_'))} 条")
     return chunks
 
+def _require_embed_deps():
+    """按需导入向量依赖，缺谁报谁（v3.2.1）。
+
+    返回 (np, faiss, SentenceTransformer)。缺依赖时抛 ImportError，
+    消息里直接给可执行的修复命令 —— 调用方（MCP memory_reindex）会把这句话
+    原样透给用户，而不是丢一个找不到源头的 ModuleNotFoundError。
+    """
+    missing = []
+    try:
+        import numpy as np
+    except ImportError:
+        np = None
+        missing.append("numpy")
+    try:
+        import faiss
+    except ImportError:
+        faiss = None
+        missing.append("faiss")
+    try:
+        from sentence_transformers import SentenceTransformer
+    except ImportError:
+        SentenceTransformer = None
+        missing.append("sentence-transformers")
+    if missing:
+        raise ImportError(
+            "缺少向量依赖: " + ", ".join(missing)
+            + "。修复: pip install " + " ".join(missing)
+            + "；若依赖装在 pip --target 目录，请设置 PIP_TARGET 或 "
+            "UAM_EXTRA_SYS_PATH 指向该目录后重启 MCP"
+        )
+    return np, faiss, SentenceTransformer
+
+
 def build_index(chunks):
-    """构建Faiss向量索引"""
+    """构建Faiss向量索引（重依赖在此处才导入）"""
+    np, faiss, SentenceTransformer = _require_embed_deps()
     os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
     os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
     print(f"\n🧠 加载模型: {MODEL_NAME}")

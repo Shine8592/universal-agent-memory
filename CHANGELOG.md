@@ -2,6 +2,45 @@
 
 本文件记录 Universal Agent Memory 的版本迭代历史，遵循 **本地迭代 → 验证 → 发布 GitHub 最新 → 旧版本归档** 的开发原则。
 
+## [v3.2.1] - 2026-10-19
+
+> 主题：修复 **`pip install --target` 部署形态下的向量依赖断裂**（社区报告 5 条，逐一核实：4 条属实 + 1 条有效加固建议）。
+
+### 为什么
+
+上游反馈：容器里用 `PIP_TARGET=/app/user-packages/python` 装依赖后，`memory_reindex` 必崩，
+且 `memory_status` 完全看不出缺什么。核实后确认三条互相叠加的结构问题：
+
+- `build_full_index.py` 顶层硬导入 `sentence_transformers` / `faiss`，而 `do_reindex`
+  在 MCP 进程内 `from build_full_index import ...` → 依赖不在 `sys.path` 时整个模块 import 失败，
+  连纯文本抽取（不需要模型）都一起用不了。
+- `_bootstrap_sys_path()` 的注释写着"PIP_TARGET 指定的 user site…这里提前补回"，
+  但**代码从未读取 `PIP_TARGET`**（只加了 `UAM_EXTRA_SYS_PATH` / `VIRTUAL_ENV` /
+  user site / `PYTHONPATH`）。`site.getusersitepackages()` ≠ `pip --target` 目录 ——
+  注释与实现不符，把排查方向直接带偏。
+- 依赖自检只 `print(..., file=sys.stderr)`，MCP 宿主不转发 stderr，用户只看到"检索失效"。
+
+另外 v3.1.1 删掉后台重建后，TOOL_DEFS 里的 `background` 参数没同步删除 ——
+传了不报错也不生效，属于本项目一直在修的那类静默不一致。
+
+### 变更
+
+1. `build_full_index.py`：重依赖改为 `_require_embed_deps()` 惰性导入，缺谁报谁并附修复命令；
+   `extract_core_and_logs()` 不再被迫加载 torch。
+2. `_bootstrap_sys_path()`：新增读取 `PIP_TARGET`（`os.pathsep` 分隔，支持多路径），
+   并修正误导性注释。
+3. `do_reindex`：捕获 `ImportError`，返回可执行的降级提示，而不是把栈抛给宿主。
+4. `memory_status`：新增「向量依赖: ✅ OK / ❌ 缺失 X」与 `PIP_TARGET` 行。
+5. `do_reindex`：重建前后比对 `semantic_index.faiss` 的 mtime，**没前进就报失败**（防假成功）。
+6. TOOL_DEFS：删除 `memory_reindex` 的 `background` 参数。
+
+### 验证
+
+- 模拟缺依赖（`sys.modules[...] = None`）：模块导入成功、纯文本抽取仍产出 94 块、
+  `_require_embed_deps()` 抛出带修复命令的 `ImportError`、`memory_reindex` 返回中文降级提示。
+- 模拟 `PIP_TARGET`：临时目录进入 `sys.path`，`import dummy_pkg` 成功（值 42）。
+- 实机重建：97 块 / 14.8s，`semantic_index.faiss` mtime 从 `12:59:26` 前进到 `13:43:08`。
+
 ## [v3.2.0] - 2026-10-19
 
 > 主题：**两个记忆 Skill 合并为一个**（删除 `semantic-memory-auto`）。属破坏性变更。

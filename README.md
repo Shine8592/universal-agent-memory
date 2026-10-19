@@ -4,7 +4,7 @@
 
 <div align="center">
 
-![version](https://img.shields.io/badge/version-3.2.0-blue)
+![version](https://img.shields.io/badge/version-3.2.1-blue)
 ![Python](https://img.shields.io/badge/Python-3.10%2B-green)
 ![MCP](https://img.shields.io/badge/Protocol-MCP%20JSON--RPC-orange)
 ![Agents](https://img.shields.io/badge/Agents-13%2B-purple)
@@ -126,7 +126,7 @@ memory_reflect(apply=True, threshold=0.82)
 | `memory_transfer` | **STM→LTM 转移** | 手动触发高重要性短期记忆提升到长期记忆 |
 | `memory_status` | **系统状态** | 显示索引条目、STM 类型分布、审计日志统计 |
 | `memory_forget` | **关键词删除** | BM25 缓存联动失效，删除即时生效 |
-| `memory_reindex` | **重建向量索引** | 支持后台/前台，自动去重，多语言模型 |
+| `memory_reindex` | **重建向量索引** | 进程内同步执行（4~16s），自动去重，校验索引文件是否真的落盘 |
 | `memory_history` | **变更历史** | 查看 Git 提交记录 |
 | `memory_rollback` | **版本回滚** | 回滚到任意 commit |
 | `memory_sync` | **Git 初始化/同步** | 一键初始化记忆仓库 |
@@ -388,7 +388,8 @@ universal-agent-memory (2026-07) → 当前主项目：MCP 架构 + 混合检索
 
 | 版本 | 说明 |
 |------|------|
-| [v3.2.0](https://github.com/Shine8592/universal-agent-memory/releases/tag/v3.2.0) | **当前最新（破坏性）**：两个记忆 Skill 合并为一个 —— `semantic-memory-auto` 的触发条件/不触发条件/结果评分并入 `memory-system` 后**删除该 Skill**；修正存储树（`warm/` `cold/` 实为内存 LRU，非磁盘目录）；MCP 工具清单补全至 12 个 |
+| [v3.2.1](https://github.com/Shine8592/universal-agent-memory/releases/tag/v3.2.1) | **当前最新**：修复 `--target` 部署形态下的向量依赖断裂 —— `build_full_index.py` 改惰性导入、`_bootstrap_sys_path()` 真正读取 `PIP_TARGET`、`memory_reindex` 缺依赖时给降级提示而非抛栈、`memory_status` 增加依赖状态行、重建后校验 index mtime；删除 v3.1.1 遗留的 `background` 参数 |
+| [v3.2.0](https://github.com/Shine8592/universal-agent-memory/releases/tag/v3.2.0) | **破坏性**：两个记忆 Skill 合并为一个 —— `semantic-memory-auto` 的触发条件/不触发条件/结果评分并入 `memory-system` 后**删除该 Skill**；修正存储树（`warm/` `cold/` 实为内存 LRU，非磁盘目录）；MCP 工具清单补全至 12 个 |
 | [v3.1.1](https://github.com/Shine8592/universal-agent-memory/releases/tag/v3.1.1) | 修复 `memory_reindex` 在 MCP 环境下 spawn 子进程会卡死（0.1s CPU / 20MB 永不结束 → 静默失败）；改为进程内同步重建（实测 5.2s），完成后就地失效缓存 |
 | [v3.1.0](https://github.com/Shine8592/universal-agent-memory/releases/tag/v3.1.0) | 检索质量三件套（时间感知排序 + 实体加权 + 矛盾记忆屏蔽）+ 索引健康度自检 + 双记忆引擎修复（`promoted_count` / `threshold` / `force`）+ `MEMORY_GLOBAL` 全局共享库 |
 | [v3.0.3](https://github.com/Shine8592/universal-agent-memory/releases/tag/v3.0.3) | 修复迭代（MCP 实机全功能验证 + `memory_remember` tags 列表格式兼容 + 模型缓存路径 Hermes 布局兼容 + 移除旧英文回退） |
