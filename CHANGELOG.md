@@ -41,6 +41,12 @@
 - 模拟 `PIP_TARGET`：临时目录进入 `sys.path`，`import dummy_pkg` 成功（值 42）。
 - 实机重建：97 块 / 14.8s，`semantic_index.faiss` mtime 从 `12:59:26` 前进到 `13:43:08`。
 
+### 文档
+
+- `skills/memory-system/references/deployment-guide.md` 增补「Ubuntu 部署」章节：
+  venv / `pip --target` 两种方案、两步验收（`向量依赖: ✅ OK` + `索引文件已更新`）、
+  离线模型目录迁移、`MEMORY_RERANKER=off` 关闭精排；故障排查表补 3 行。
+
 ## [v3.2.0] - 2026-10-19
 
 > 主题：**两个记忆 Skill 合并为一个**（删除 `semantic-memory-auto`）。属破坏性变更。
