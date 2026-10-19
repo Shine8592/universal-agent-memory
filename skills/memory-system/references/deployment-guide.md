@@ -121,6 +121,31 @@ cronjob action=create name="记忆维护自动转移" \
 | 记忆维护（转移 STM→LTM） | 调用 MCP 工具 `memory_transfer`（threshold 可调） |
 | 查看Cron任务列表 | `cronjob action=list` |
 
+## 维护注意事项
+
+### ⚠️ 验证写 LTM 的操作必须用沙箱，不要打真实存储
+
+`memory_transfer` / `memory_reflect(apply=true)` 会**往 MEMORY.md 追加内容**。
+验证这类操作时如果直接打真实 `MEMORY_STORE`，一旦逻辑有误就会污染真实记忆
+（v3.2.2 体检时就发生过：`force=True` 把 4 条真实 STM 误提升进 LTM，事后手动回滚）。
+
+正确做法是指向临时目录：
+
+```python
+import os, sys
+sys.path.insert(0, ".../scripts")
+os.environ["MEMORY_STORE"] = "/tmp/uam_sandbox"   # 沙箱
+import mcp_server
+# 在这里做 memory_transfer / memory_reflect 的验证，随便折腾
+```
+
+沙箱里没有 MEMORY.md 也无所谓 —— `ensure_dirs()` 会自动建，
+`transfer_to_ltm` 会自己创建空的 LTM 文件。验证完删掉沙箱目录即可，
+真实记忆零接触。
+
+同理，`memory_forget` / `memory_reindex` 这类会改索引或删 STM 的操作，
+如果要验证**行为正确性**（而非"它能不能跑"），也建议在沙箱里做。
+
 ## 故障排查
 
 | 问题 | 原因 | 解决 |
