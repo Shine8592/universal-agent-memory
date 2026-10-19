@@ -779,7 +779,7 @@ def do_forget(args):
 @tool("memory_status")
 def do_status(args):
     ensure_dirs()
-    lines = ["记忆系统 v3.1.0 (混合检索+重排+实体/时间/矛盾屏蔽)",
+    lines = ["记忆系统 v3.1.1 (混合检索+重排+实体/时间/矛盾屏蔽)",
              f"   项目: {PROJECT_ROOT}", f"   存储: {MEMORY_DIR}", ""]
     lines.append(f"   向量索引: {'✅ 存在' if INDEX_PATH.exists() else '❌ 未构建'}")
 
@@ -1063,38 +1063,28 @@ def do_reflect(args):
 
 @tool("memory_reindex")
 def do_reindex(args):
-    # Default to background to avoid MCP execution timeout (30s default)
-    background = args.get("background", True)
-    if background:
-        import subprocess
-        subprocess.Popen(
-            [sys.executable, str(SCRIPTS_DIR / "build_full_index.py")],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        return "✅ 索引重建已在后台启动（完成后用 memory_status 查看）"
-    # Foreground mode: keep it fast to avoid timeout
+    """重建向量索引（v3.1.0：本进程内同步重建）。
+
+    旧版默认 spawn 子进程 + stdout/stderr=DEVNULL，在 MCP 环境下会卡死
+    （子进程 0.1s CPU / 20MB、永不结束 —— 静默失败）。实测构建只要 4~16s，
+    远低于 MCP 超时（默认 600s），同步做最稳；完成后就地失效缓存，无需重启。"""
     from build_full_index import extract_core_and_logs, build_index as do_build
     ensure_dirs()
     chunks = extract_core_and_logs()
-    MAX_CHUNKS = 200  # smaller to stay under timeout
     if not chunks:
         return "❌ 没有找到可索引的内容"
-    if len(chunks) > MAX_CHUNKS:
-        def _sort_key(c):
-            # 归一化为浮点时间戳：ISO 字符串与 st_mtime 浮点混排时直接比较会 TypeError
-            ts = c.get("timestamp", "")
-            try:
-                if isinstance(ts, (int, float)):
-                    return float(ts)
-                if isinstance(ts, str) and ts:
-                    return datetime.fromisoformat(ts).timestamp()
-            except Exception:
-                pass
-            return 0.0
-        chunks.sort(key=_sort_key, reverse=True)
-        chunks = chunks[:MAX_CHUNKS]
+
+    t0 = datetime.now()
     do_build(chunks)
-    return f"✅ 索引重建完成: {len(chunks)} 条"
+
+    # 就地失效缓存：下一次检索直接加载新索引
+    global searcher, _bm25_index, _full_cache
+    searcher = None
+    _bm25_index = None
+    _full_cache = {"mtime": None, "map": {}}
+
+    dur = (datetime.now() - t0).total_seconds()
+    return f"✅ 索引已重建：{len(chunks)} 块，用时 {dur:.1f}s（缓存已失效，下次检索自动加载）"
 
 @tool("memory_history")
 def do_history(args):
@@ -1188,7 +1178,7 @@ def handle_message(msg: dict) -> dict | None:
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"experimental": {}, "tools": {"listChanged": False}},
-                "serverInfo": {"name": "universal-agent-memory", "version": "3.1.0"}
+                "serverInfo": {"name": "universal-agent-memory", "version": "3.1.1"}
             }
         }
     elif method == "notifications/initialized":
