@@ -62,8 +62,13 @@ class SemanticMemorySearch:
             os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
         # 动态读取真实维度（换模型后不会因硬编码 384 崩溃）
+        # 新版 sentence-transformers 已将该 API 更名为 get_embedding_dimension，
+        # 旧名仍可用但每次加载都会打 FutureWarning，故优先新名、旧名兜底。
         try:
-            real_dim = self.model.get_sentence_embedding_dimension()
+            getter = getattr(self.model, "get_embedding_dimension", None)
+            if getter is None:
+                getter = self.model.get_sentence_embedding_dimension
+            real_dim = getter()
             if real_dim:
                 self.dimension = int(real_dim)
         except Exception:
