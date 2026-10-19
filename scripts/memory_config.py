@@ -29,10 +29,15 @@ def get_project_root() -> Path:
 def get_memory_dir() -> Path:
     """项目级记忆存储目录（兼容旧路径 .opencode/memory，支持 MEMORY_STORE 覆盖）。
     未设环境变量时（如 cron/nohup 直接跑脚本），优先真实部署路径，
-    否则回退 cwd/.opencode/memory —— 避免读空目录导致索引/检索全 0。"""
+    否则回退 cwd/.opencode/memory —— 避免读空目录导致索引/检索全 0。
+
+    v3.1.0：新增 MEMORY_GLOBAL=1 —— 全局共享库（~/.opencode-memory），
+    所有项目共用一份记忆，修掉「换个目录开 Agent 就看起来失忆」的问题。"""
     env = os.environ.get("MEMORY_STORE")
     if env:
         return Path(env).resolve()
+    if os.environ.get("MEMORY_GLOBAL", "").strip().lower() in ("1", "true", "yes", "on"):
+        return Path.home() / ".opencode-memory"
     # 真实部署路径探测：~/.hermes/memory 存在则优先（GitHub 修复版逻辑，兼容性保留）
     hermes = Path.home() / ".hermes" / "memory"
     if hermes.exists():
@@ -43,7 +48,10 @@ def get_scripts_dir() -> Path:
     return get_opencode_global() / "scripts"
 
 def get_hermes_dir() -> Path:
-    """记忆核心文件目录（.opencode/）"""
+    """记忆核心文件目录（.opencode/）。v3.1.0：MEMORY_GLOBAL=1 时与全局库同目录，
+    使 MEMORY.md 也在全局库里，避免 LTM 留在项目级造成「记忆分裂」。"""
+    if os.environ.get("MEMORY_GLOBAL", "").strip().lower() in ("1", "true", "yes", "on"):
+        return get_memory_dir()
     return get_project_root() / ".opencode"
 
 MEMORY_DIR = get_memory_dir()

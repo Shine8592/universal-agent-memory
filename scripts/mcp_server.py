@@ -97,6 +97,108 @@ from memory_config import (
 )
 from hybrid_search import build_from_stm, rrf_merge
 
+# ═══════════════════════════════════════════════════════════════════
+#  v3.1.0 检索增强：实体加权 + 时间感知 + 矛盾记忆屏蔽
+#
+#  借鉴 mem0 的 entity linking / temporal reasoning，但**不引入任何 LLM**：
+#  实体用词典匹配，时间用时间戳衰减，矛盾用显式 supersedes 声明。
+# ═══════════════════════════════════════════════════════════════════
+SUPERSEDED_PATH = MEMORY_DIR / "superseded.json"
+
+# 实体词典：项目名 / 工具名 / 平台名（命中是最强的领域信号）
+ENTITY_TERMS = [
+    "duduhaibao", "duduppt", "duduexcel", "dudutt", "universal-agent-memory",
+    "opencode", "hermes", "claude", "codex", "cursor", "playwright", "tavily",
+    "typst", "python-pptx", "pptxgenjs", "openpyxl", "faiss", "bm25", "sqlite",
+    "github", "pypi", "vps", "ssh", "nginx", "docker", "windows", "powershell",
+    "快团团", "拼多多", "海报", "记忆系统", "节气", "小红书", "公众号", "邀请函",
+]
+
+
+def _extract_entities(text: str) -> set:
+    t = (text or "").lower()
+    return {e for e in ENTITY_TERMS if e in t}
+
+
+def _parse_ts(value):
+    """解析多种时间格式 → datetime；解析不了返回 None。"""
+    if not value:
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(value))
+        except Exception:
+            return None
+    s = str(value)[:19].replace("T", " ")
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s, fmt)
+        except Exception:
+            continue
+    return None
+
+
+def _recency_score(value) -> float:
+    """新近程度 0~1（半衰期 180 天）。无时间戳给中性 0.5，不奖不罚。"""
+    ts = _parse_ts(value)
+    if ts is None:
+        return 0.5
+    days = max(0.0, (datetime.now() - ts).total_seconds() / 86400.0)
+    return 0.5 ** (days / 180.0)
+
+
+def _load_superseded() -> list:
+    try:
+        if SUPERSEDED_PATH.exists():
+            data = json.loads(SUPERSEDED_PATH.read_text(encoding="utf-8"))
+            return data if isinstance(data, list) else []
+    except Exception:
+        pass
+    return []
+
+
+def _save_superseded(items: list):
+    try:
+        SUPERSEDED_PATH.parent.mkdir(parents=True, exist_ok=True)
+        SUPERSEDED_PATH.write_text(
+            json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:
+        print(f"[superseded] 写入失败: {e}", file=sys.stderr)
+
+
+def _is_superseded(text: str, rules: list) -> bool:
+    t = (text or "").lower()
+    for r in rules or []:
+        pat = str(r.get("pattern", "") or "").strip().lower()
+        if pat and pat in t:
+            return True
+    return False
+
+
+# 全文缓存：检索结果里的 text 会被截断（200/500 字），直接拿它比对 supersedes
+# 会漏掉位于截断之后的关键词。这里按「前 120 字」回查元数据里的完整 chunk。
+_full_cache = {"mtime": None, "map": {}}
+
+
+def _full_text_map() -> dict:
+    try:
+        if not METADATA_PATH.exists():
+            return {}
+        mt = METADATA_PATH.stat().st_mtime
+        if _full_cache["mtime"] == mt:
+            return _full_cache["map"]
+        meta = json.loads(METADATA_PATH.read_text(encoding="utf-8"))
+        m = {}
+        for e in meta:
+            t = e.get("text", "") or ""
+            if t:
+                m[t[:120]] = t
+        _full_cache["mtime"] = mt
+        _full_cache["map"] = m
+        return m
+    except Exception:
+        return {}
+
 # Lazy-load model on first use (cold start ~1s instead of ~10s)
 searcher = None
 
@@ -234,7 +336,8 @@ TOOL_DEFS = [
             "properties": {
                 "query": {"type": "string", "description": "搜索查询"},
                 "top_k": {"type": "integer", "description": "返回结果数", "default": 5},
-                "type_filter": {"type": "string", "description": "按记忆类型过滤：preference/decision/pitfall/fact/skill/event/config", "default": ""}
+                "type_filter": {"type": "string", "description": "按记忆类型过滤：preference/decision/pitfall/fact/skill/event/config", "default": ""},
+                "include_superseded": {"type": "boolean", "description": "是否包含已被 supersedes 推翻的旧结论（默认 false，屏蔽旧结论）", "default": False}
             },
             "required": ["query"]
         }
@@ -247,7 +350,9 @@ TOOL_DEFS = [
             "properties": {
                 "content": {"type": "string", "description": "记忆内容"},
                 "tags": {"type": "string", "description": "逗号分隔的标签", "default": ""},
-                "type": {"type": "string", "description": "记忆类型：preference/decision/pitfall/fact/skill/event/config（不填则自动推断）", "default": ""}
+                "type": {"type": "string", "description": "记忆类型：preference/decision/pitfall/fact/skill/event/config（不填则自动推断）", "default": ""},
+                "supersedes": {"type": "string", "description": "可选：本条记忆推翻了哪条旧结论（填旧记忆里的特征串）。填了之后检索默认屏蔽它", "default": ""},
+                "supersedes_reason": {"type": "string", "description": "可选：为什么推翻（留痕用）", "default": ""}
             },
             "required": ["content"]
         }
@@ -280,8 +385,14 @@ TOOL_DEFS = [
     },
     {
         "name": "memory_transfer",
-        "description": "将高重要性的短期记忆(STM)提升到长期记忆(LTM)。当短期记忆即将过期或用户希望固化重要记忆时调用。",
-        "inputSchema": {"type": "object", "properties": {}}
+        "description": "将高重要性的短期记忆(STM)提升到长期记忆(LTM)。当短期记忆即将过期或用户希望固化重要记忆时调用。v3.1.0：支持 threshold 与 force。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "threshold": {"type": "number", "description": "重要性阈值（默认 0.7，越低越容易提升）", "default": 0.7},
+                "force": {"type": "boolean", "description": "无条件提升当前全部短期记忆（最多 10 条）", "default": False}
+            }
+        }
     },
     {
         "name": "memory_history",
@@ -477,28 +588,58 @@ def do_recall(args):
     merged = rerank(query, merged, top_k)
     reranked = bool(merged and merged[0].get("reranked"))
 
-    method_tag = "BM25+向量+RRF+CrossEncoder" if reranked else "BM25+向量+RRF"
-    # 归一化相对得分（0~1），基于 rerank_score 或 similarity
+    # ── v3.1.0：矛盾记忆屏蔽（superseded）──
+    # 记忆只增不删会留下互相冲突的旧结论（如「git push 走 API」vs「直连已恢复」）。
+    # 存新记忆时用 supersedes 声明推翻旧结论，这里默认把被推翻的条目挡掉。
+    rules = _load_superseded()
+    if rules and not bool(args.get("include_superseded", False)):
+        ft = _full_text_map()
+        kept = []
+        for r in merged:
+            txt = r.get("text", "") or ""
+            full = ft.get(txt[:120], txt)       # 回查全文，避免截断导致漏判
+            if not _is_superseded(full, rules):
+                kept.append(r)
+        merged = kept
+
+    # ── v3.1.0：实体加权 + 时间感知（借鉴 mem0，纯本地）──
+    q_ents = _extract_entities(query)
     score_key = "rerank_score" if reranked else "similarity"
-    scores = [float(r.get(score_key, 0) or 0) for r in merged]
-    # min-max 归一化：Cross-encoder 输出 logits 可为负，直接除以最大值会产生
-    # 负相关度（如 -2.14）误导用户。改为线性映射到 0~1 区间。
-    if scores:
-        s_min, s_max = min(scores), max(scores)
-        s_span = s_max - s_min
+    raws = [float(r.get(score_key, 0) or 0) for r in merged]
+    if raws:
+        lo, hi = min(raws), max(raws)
+        span = hi - lo
     else:
-        s_min, s_span = 0.0, 0.0
+        lo, span = 0.0, 0.0
+    for r, raw in zip(merged, raws):
+        base = 1.0 if span <= 1e-9 else (raw - lo) / span
+        ents = _extract_entities(r.get("text", ""))
+        r["_ent"] = round((len(q_ents & ents) / len(q_ents)) if q_ents else 0.0, 3)
+        r["_rec"] = round(_recency_score(r.get("timestamp", "")), 3)
+        # 权重：相关性 0.70 / 实体 0.18 / 新近度 0.12 —— 微调排序，不推翻强相关
+        r["_final"] = round(0.70 * base + 0.18 * r["_ent"] + 0.12 * r["_rec"], 4)
+    merged.sort(key=lambda r: -r["_final"])
+    merged = merged[:top_k]
+
+    method_tag = "BM25+向量+RRF+CrossEncoder" if reranked else "BM25+向量+RRF"
+    bonus = []
+    if q_ents:
+        bonus.append("实体")
+    if any(r.get("timestamp") for r in merged):
+        bonus.append("时间")
+    if rules:
+        bonus.append("矛盾屏蔽")
+    if bonus:
+        method_tag += "+" + "+".join(bonus)
 
     lines = [f"搜索 '{query}' 结果 (top {len(merged)}, {method_tag}):", ""]
     for rank, r in enumerate(merged, 1):
-        raw = float(r.get(score_key, 0) or 0)
-        # 全部同分时统一显示 1.00，否则按 min-max 映射
-        norm = 1.0 if s_span <= 1e-9 else (raw - s_min) / s_span
         src = r.get("source", "?")
         mtype = r.get("mem_type", "") or r.get("type", "")
         type_tag = f"[{mtype}]" if mtype else ""
         text = _clean_surrogates(r.get("text", "")[:200].replace("\n", " "))
-        lines.append(f"#{rank} (relv {norm:.2f}) [{src}]{type_tag} {text}")
+        mark = " ★实体" if r.get("_ent", 0) > 0 else ""
+        lines.append(f"#{rank} (relv {float(r.get('_final', 0.0)):.2f}) [{src}]{type_tag} {text}{mark}")
     return "\n".join(lines)
 
 @tool("memory_remember")
@@ -546,17 +687,64 @@ def do_remember(args):
     auto_commit(f"新增记忆: {safe_msg}")
     # diff 审计日志（阶段三-8）
     append_diff("add", item_id, content, meta_clean.get("tags"), type=mem_type)
+
+    # ── v3.1.0：声明推翻旧结论（矛盾记忆的显式解法）──
+    sup = _clean_surrogates(str(args.get("supersedes", "") or "")).strip()
+    if sup:
+        rules = _load_superseded()
+        rules.append({
+            "pattern": sup,
+            "at": datetime.now().isoformat(timespec="seconds"),
+            "by": item_id[:12],
+            "reason": _clean_surrogates(str(args.get("supersedes_reason", "") or "")),
+        })
+        _save_superseded(rules)
+        return f"已保存记忆: {item_id[:12]}（并屏蔽旧结论：{sup[:30]}）"
     return f"已保存记忆: {item_id[:12]}"
 
 @tool("memory_transfer")
 def do_transfer(args):
-    """手动触发 STM→LTM 转移：将高重要性短期记忆提升到长期记忆"""
+    """手动触发 STM→LTM 转移。
+    v3.1.0：支持 threshold（默认 0.7）与 force（无条件提升当前全部 STM），
+    并修正 promoted_count 统计（旧版恒为 0，看起来像"从未提升过"）。"""
     from dual_memory_engine import MemoryCoordinator
     coordinator = MemoryCoordinator()
-    transferred = coordinator.auto_transfer(max_transfers=10)
+    transferred = 0
+
+    if bool(args.get("force", False)):
+        ids = [f.stem for f in STM_DIR.glob("*.json")]
+        for sid in ids[:10]:
+            try:
+                if coordinator.transfer_to_ltm(sid):
+                    transferred += 1
+            except Exception:
+                continue
+    else:
+        try:
+            t = float(args.get("threshold", 0.7))
+        except Exception:
+            t = 0.7
+        coordinator.state["importance_threshold"] = max(0.0, min(1.0, t))
+        transferred = coordinator.auto_transfer(max_transfers=10)
+
+    # 修正统计（旧版 stats.promoted_count 从不更新）
+    try:
+        coord_path = MEMORY_DIR / "memory_coordinator.json"
+        if coord_path.exists():
+            c = json.loads(coord_path.read_text(encoding="utf-8"))
+            st = c.setdefault("stats", {})
+            st["promoted_count"] = int(st.get("promoted_count", 0)) + int(transferred or 0)
+            st["stm_count"] = len(list(STM_DIR.glob("*.json")))
+            c["last_transfer"] = datetime.now().isoformat(timespec="seconds")
+            coord_path.write_text(json.dumps(c, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
     if transferred:
-        auto_commit(f"自动转移 {transferred} 条短期记忆到长期记忆")
-    return f"✅ 已转移 {transferred} 条短期记忆到长期记忆" if transferred else "ℹ️ 没有达到转移阈值的短期记忆"
+        auto_commit(f"转移 {transferred} 条短期记忆到长期记忆")
+        return (f"✅ 已转移 {transferred} 条短期记忆到长期记忆"
+                f"（索引会在下次自动重建时纳入，或立即 memory_reindex）")
+    return "ℹ️ 没有达到转移阈值的短期记忆；可传 threshold=0.3 或 force=true 强制提升"
 
 @tool("memory_forget")
 def do_forget(args):
@@ -591,16 +779,51 @@ def do_forget(args):
 @tool("memory_status")
 def do_status(args):
     ensure_dirs()
-    lines = ["记忆系统 v3.0.3 (混合检索+重排)", f"   项目: {PROJECT_ROOT}", f"   存储: {MEMORY_DIR}", ""]
+    lines = ["记忆系统 v3.1.0 (混合检索+重排+实体/时间/矛盾屏蔽)",
+             f"   项目: {PROJECT_ROOT}", f"   存储: {MEMORY_DIR}", ""]
     lines.append(f"   向量索引: {'✅ 存在' if INDEX_PATH.exists() else '❌ 未构建'}")
+
+    # ── v3.1.0：索引健康度自检（防"存了但检索不到"的静默落后）──
+    meta_n, latest_ts = 0, ""
     if METADATA_PATH.exists():
         try:
             meta = json.loads(METADATA_PATH.read_text(encoding="utf-8"))
-            lines.append(f"   索引条目: {len(meta)}")
+            meta_n = len(meta)
+            tss = [m.get("timestamp", "") for m in meta if m.get("timestamp")]
+            latest_ts = max(tss) if tss else ""
         except Exception:
-            lines.append("   索引条目: 解析失败")
-    else:
-        lines.append("   索引条目: 0")
+            pass
+    lines.append(f"   索引条目: {meta_n}")
+
+    ltm = HERMES_DIR / "MEMORY.md"
+    if ltm.exists():
+        try:
+            sec = sum(1 for ln in ltm.read_text(encoding="utf-8").splitlines()
+                      if ln.startswith("### "))
+            lines.append(f"   长期记忆段: {sec} 段（MEMORY.md）")
+            if INDEX_PATH.exists():
+                gap_h = (ltm.stat().st_mtime - INDEX_PATH.stat().st_mtime) / 3600.0
+                if gap_h > 1.0:
+                    lines.append(f"   ⚠ 索引比 MEMORY.md 落后 {gap_h:.1f} 小时 → 建议 memory_reindex")
+        except Exception:
+            pass
+    if latest_ts:
+        lines.append(f"   最新记忆时间: {latest_ts[:16]}")
+    rules = _load_superseded()
+    if rules:
+        lines.append(f"   已屏蔽旧结论: {len(rules)} 条（superseded）")
+
+    # 双记忆引擎统计（v3.1.0：promoted_count 现在会真的累加）
+    try:
+        cp = MEMORY_DIR / "memory_coordinator.json"
+        if cp.exists():
+            c = json.loads(cp.read_text(encoding="utf-8"))
+            st = c.get("stats", {}) or {}
+            lines.append(f"   已提升到长期: {st.get('promoted_count', 0)} 条（累计）")
+            if c.get("last_transfer"):
+                lines.append(f"   最近一次提升: {str(c['last_transfer'])[:16]}")
+    except Exception:
+        pass
 
     # 统计 STM 及类型分布（阶段三-6）
     type_dist = {}
@@ -965,7 +1188,7 @@ def handle_message(msg: dict) -> dict | None:
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"experimental": {}, "tools": {"listChanged": False}},
-                "serverInfo": {"name": "universal-agent-memory", "version": "3.0.3"}
+                "serverInfo": {"name": "universal-agent-memory", "version": "3.1.0"}
             }
         }
     elif method == "notifications/initialized":

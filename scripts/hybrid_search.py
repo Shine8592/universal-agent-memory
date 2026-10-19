@@ -96,6 +96,7 @@ class BM25Index:
                 "text": d.get("text", "")[:500],
                 "source": d.get("source", ""),
                 "mem_type": d.get("mem_type", ""),
+                "timestamp": d.get("timestamp", ""),
                 "similarity": round(min(s / max_s, 1.0), 4),
                 "extra": d.get("extra", {}),
             })
@@ -142,6 +143,7 @@ def build_from_stm(stm_dir: Path, metadata_path: Path) -> BM25Index:
                         "text": txt,
                         "source": f"stm/{item.get('id', f.stem)[:12]}",
                         "mem_type": item.get("mem_type", ""),
+                        "timestamp": item.get("timestamp", ""),
                         "extra": {"stm_id": item.get("id", f.stem)},
                     })
             except Exception:
@@ -157,6 +159,7 @@ def build_from_stm(stm_dir: Path, metadata_path: Path) -> BM25Index:
                         "text": txt[:800],
                         "source": entry.get("source", "?"),
                         "mem_type": entry.get("type", "core_memory"),
+                        "timestamp": entry.get("timestamp", ""),
                         "extra": {},
                     })
         except Exception:
