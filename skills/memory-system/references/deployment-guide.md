@@ -154,6 +154,7 @@ import mcp_server
 | `memory_status` 显示 `向量依赖: ❌ 缺失 ...` | 依赖装了但不在 `sys.path`（`--target` / 容器常见） | 设 `PIP_TARGET` 或 `UAM_EXTRA_SYS_PATH`，然后**重启 MCP** |
 | `memory_reindex` 返回「mtime 未前进」 | 构建提前退出或索引写入失败 | 确认 chunks 非 0，查 MCP stderr |
 | 容器内 `memory_reindex` 抛 `ModuleNotFoundError` | 旧版 `build_full_index.py` 顶层硬导入 | 升级到 v3.2.1+ |
+| 定时任务突然 `ImportError`（此前一直成功） | 宿主（Hermes cron 等）用自己的 Python 进程内 `exec` 脚本，**忽略 prompt 和 shebang**，且该解释器缺第三方包 | 套 `.sh` 包装器（宿主遇到 `.sh` 会走 bash），内部用 venv 绝对路径调脚本，如 `exec /path/venv/bin/python /path/build_full_index.py` |
 | Faiss索引为空（0 chunks） | 核心记忆文件未放入 `~/.config/opencode/memory/` | 放入 SOUL.md, MEMORY.md 等文件 |
 | 搜索结果不相关 | 索引太旧或会话数据未包含 | 运行 `build_full_index.py` 重建 |
 | STM为空 | 刚部署或已过期清理 | 正常，新会话会自动产生STM条目 |
