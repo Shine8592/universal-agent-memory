@@ -2,6 +2,57 @@
 
 本文件记录 Universal Agent Memory 的版本迭代历史，遵循 **本地迭代 → 验证 → 发布 GitHub 最新 → 旧版本归档** 的开发原则。
 
+## [v3.2.3] - 2026-10-22
+
+> 主题：**补上会话采集层** —— 让记忆系统真的"每天在工作"，而不是靠模型主动存。
+
+### 为什么
+
+`memory_remember` 只能靠模型主动调用，实际结果是**大部分会话根本没进记忆** ——
+记忆系统看起来开着，实际是空的。
+
+更隐蔽的问题：opencode 在上下文超限时会做 **compaction，直接删除旧 message**。
+实测 2026-10-22 上午的几十轮对话，下午就查不到了，事后无法补采。
+
+### 变更
+
+1. **新增 `memory_session_ingest.py`（会话采集器）**
+   - 从 `opencode.db` 读取会话，按项目目录过滤（user 消息没有 `path` 字段，
+     用 `session.directory` 兜底）
+   - `daily/YYYY-MM-DD.md` 改为**追加式**日志，每条消息带 `<!-- msg:ID -->` 标记，
+     按 msg_id 去重（重复跑不会写重，compaction 删库也不影响已落盘内容）
+   - 内容里的 markdown 标题自动转义，避免破坏 daily 结构
+   - 同时把「用户提问 + 助手结论」成对写入 STM
+
+2. **新增 `memory_daily_upgrade.py`（每日维护）**
+   - `auto_transfer(threshold=0.7)` 提升达标 STM → LTM
+   - `_cleanup()` 清理过期 STM（≥0.6 分的先提升再删）
+   - 同步 `promoted_count` / `stm_count` / `last_transfer`
+
+3. **`build_full_index.py`：daily 切分改按「问答轮次」**
+   - 旧版：整文件 1 个 chunk + 截断 `MAX_CHUNK_CHARS` → 一天里 93% 内容检索不到
+   - 中间版：按单条消息切 → 问答被拆散、块数翻倍
+   - 现在：一条提问 + 其后回复 = 1 个 chunk；超长时保留「提问 + 结论」，丢中间过程
+
+4. **文案去 opencode 绑定**
+   - 索引 banner：`opencode 记忆系统` → `AI Agent 记忆系统`
+   - SKILL description：`opencode 持久记忆` → `AI Agent 持久记忆，跨平台通用`
+
+### 验证
+
+- 采集 10-21（113 条消息）+ 10-22（53 条）→ daily 29K + 17K 字符
+- 索引 98 → 162 块（daily 33 个轮次 chunk + 31 STM + 98 核心）
+- 检索命中：会话提问 `0.823`、daily 轮次 `0.735`
+- 定时任务实测：`Memory_SessionIngest`（每 2 小时，防 compaction）、
+  `Memory_DailyUpgrade`（每天 04:00）
+
+### 已知边界
+
+- 采集器当前只覆盖**单个项目目录**（`memory_config.PROJECT_ROOT`），
+  其他项目需各自配置
+- 只采集有文本的消息（纯工具调用步骤跳过）
+- 已被 compaction 删除的历史无法补采 —— 所以采集频率必须高于压缩频率（2 小时）
+
 ## [v3.2.2] - 2026-10-19
 
 > 主题：**体检修复** —— 打通两个一直"假工作"的统计/去重逻辑。

@@ -52,17 +52,35 @@ def extract_core_and_logs():
         for fpath in sorted(DAILY_DIR.glob("*.md")):
             try:
                 text = fpath.read_text(encoding='utf-8').strip()
-                if len(text) > 30:
-                    key = text[:50]
-                    if key not in seen:
-                        seen.add(key)
-                        chunks.append({
-                            "id": f"daily/{fpath.name}",
-                            "text": text[:MAX_CHUNK_CHARS],
-                            "source": f"daily/{fpath.name}",
-                            "type": "daily_log",
-                            "timestamp": datetime.now().isoformat()
-                        })
+                if len(text) <= 30:
+                    continue
+                # v3.2.3：按「问答轮次」切分（一条用户提问 + 其后的助手回复 = 1 个 chunk）。
+                # 旧版整文件 1 个 chunk 且截断到 MAX_CHUNK_CHARS，一天里大部分会话检索不到；
+                # 中间版本按单条消息切又会把问答拆散、块数翻倍。
+                # 轮次切分兼顾语义完整与索引体积。
+                sections = re.split(r'\n(?=### 用户 )', text)
+                for si, sec in enumerate(sections):
+                    sec = sec.strip()
+                    if len(sec) < 40:
+                        continue
+                    # 跳过纯文件头（不含任何消息）
+                    if "### " not in sec:
+                        continue
+                    key = sec[:50]
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    # 轮次超长时保留「提问 + 结论」两段，丢弃中间过程
+                    if len(sec) > MAX_CHUNK_CHARS:
+                        half = MAX_CHUNK_CHARS // 2
+                        sec = sec[:half].rstrip() + "\n…\n" + sec[-half:].lstrip()
+                    chunks.append({
+                        "id": f"daily/{fpath.name}:{si}",
+                        "text": sec,
+                        "source": f"daily/{fpath.name}",
+                        "type": "daily_log",
+                        "timestamp": datetime.now().isoformat()
+                    })
             except Exception as e:
                 print(f"  ⚠ {fpath.name}: {e}")
 
@@ -182,7 +200,7 @@ def build_index(chunks):
 
 if __name__ == '__main__':
     print("=" * 50)
-    print("🚀 opencode 记忆系统 - 全量索引构建")
+    print("🚀 AI Agent 记忆系统 - 全量索引构建")
     print("=" * 50)
     start = time.time()
 
